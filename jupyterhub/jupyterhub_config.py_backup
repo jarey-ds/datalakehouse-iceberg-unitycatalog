@@ -1,0 +1,88 @@
+from dockerspawner import DockerSpawner
+from oauthenticator.generic import GenericOAuthenticator
+from jupyterhub.handlers import BaseHandler
+import os
+
+
+
+c = get_config()
+
+c.JupyterHub.authenticator_class = GenericOAuthenticator
+c.JupyterHub.spawner_class = DockerSpawner  # Ensure DockerSpawner is explicitly set
+
+c.GenericOAuthenticator.client_id = "jupyterhub-client"
+c.GenericOAuthenticator.client_secret = "supersecret"
+c.GenericOAuthenticator.oauth_callback_url = "http://localhost:8000/hub/oauth_callback"
+c.GenericOAuthenticator.scope = ['openid', 'email', 'profile']
+c.Authenticator.allowed_users = {'testuser'}  # ← allows everyone
+c.Authenticator.admin_users = {'testuser'}
+c.GenericOAuthenticator.userdata_method = 'GET'
+c.GenericOAuthenticator.username_claim = 'preferred_username'
+
+c.GenericOAuthenticator.authorize_url = 'http://keycloak:8080/realms/jupyterhub/protocol/openid-connect/auth'
+c.GenericOAuthenticator.token_url = 'http://keycloak:8080/realms/jupyterhub/protocol/openid-connect/token'
+c.GenericOAuthenticator.userdata_url = 'http://keycloak:8080/realms/jupyterhub/protocol/openid-connect/userinfo'
+
+c.Authenticator.auto_login = True
+
+# DockerSpawner config
+notebook_image = os.environ.get('DOCKER_NOTEBOOK_IMAGE', 'jupyterhub/jupyterhub:5')
+c.DockerSpawner.image = notebook_image
+#c.DockerSpawner.remove = True
+c.DockerSpawner.network_name = 'jupyter-network'  # or use Docker Compose network
+c.DockerSpawner.use_internal_ip = True
+c.DockerSpawner.debug = True
+
+
+# DockerSpawner setup
+c.DockerSpawner.extra_create_kwargs = {
+    #'user': '{username}',  # Create this user in the container when it spawns
+    #'user': '1000:1000',
+    'user': 'root',
+    'environment': {
+        'USER': '{username}',
+        'HOME': '/home/{username}',  # Make sure the home directory is properly set
+    }
+}
+
+c.Spawner.environment = {
+    'HUB_IP': 'jupyterhub',  # Ensure this matches the name of the jupyterhub container in Docker
+    'JUPYTERHUB_API_URL': 'http://jupyterhub:8081/hub/api'
+}
+
+# Optional: mount volume for persistence
+c.DockerSpawner.volumes = {
+    'jupyterhub-user-{username}': '/home/{username}'
+}
+
+c.DockerSpawner.cmd = [
+    "sh", "-c", "useradd -m $USER && /usr/local/bin/start-notebook.sh"
+]
+
+
+# Customizing the spawning process
+def add_oauth_token_to_environment(spawner):
+    # Ensure the user is authenticated and has the token
+    user = spawner.user
+    if user is not None and hasattr(user, 'auth_state') and user.auth_state is not None:
+        # Access the OAuth token from the user's auth_state
+        token = user.auth_state.get('token', None)
+
+        if token:
+            # Add the OAuth token to the container's environment
+            spawner.environment['OAUTH_TOKEN'] = token
+            spawner.log.info(f"Injected OAuth token for user {user.name}")
+        else:
+            spawner.log.warning(f"No OAuth token found for user {user.name}")
+    else:
+        spawner.log.warning(f"User or auth_state not available for {spawner.user.name}")
+
+
+# Hook the function to the pre_spawn event
+c.DockerSpawner.pre_spawn_hook = add_oauth_token_to_environment
+
+c.DockerSpawner.start_timeout = 300  # Increase the timeout to 300 seconds
+# Set the DockerSpawner configuration
+
+# Hub IP inside the Docker network
+c.JupyterHub.hub_ip = '0.0.0.0'

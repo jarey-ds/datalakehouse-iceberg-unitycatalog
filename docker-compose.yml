@@ -1,0 +1,53 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0.1
+    command: 'start-dev --import-realm'
+    volumes:
+      - ./keycloak/realm-config/:/opt/keycloak/data/import
+      - ./keycloak/realm-config/keycloak-health-check.sh:/opt/keycloak/health-check.sh
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: true
+      KC_HTTP_MANAGEMENT_PORT: 9990
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: 'bash /opt/keycloak/health-check.sh'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - jupyter-network
+
+  jupyterhub:
+    image: jupyterhub5-jose
+    build: ./jupyterhub/
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Allow JupyterHub to control Docker
+      - ./jupyterhub:/srv/jupyterhub
+    environment:
+      - OAUTH_CALLBACK_URL=http://localhost:8000/hub/oauth_callback
+      - DOCKER_NOTEBOOK_IMAGE=jupyter/base-notebook:latest
+      - OAUTH_CLIENT_ID=jupyterhub
+      - OAUTH_CLIENT_SECRET=secret
+      - OAUTH_CALLBACK_URL=http://localhost:8000/hub/oauth_callback
+      - OAUTH_AUTHORIZE_URL=http://keycloak:8080/realms/jupyterhub/protocol/openid-connect/auth
+      - OAUTH_TOKEN_URL=http://keycloak:8080/realms/jupyterhub/protocol/openid-connect/token
+      - OAUTH_USERDATA_URL=http://keycloak:8080/realms/jupyterhub/protocol/openid-connect/userinfo
+      - OAUTH_SCOPE=openid email profile
+      - JUPYTERHUB_CRYPT_KEY=4K4CDnVZsh8B8bhCI3sjbemde1-VoreQmQs_Q4XuufY=
+    command: >
+      /bin/bash -c "jupyterhub -f /srv/jupyterhub/jupyterhub_config.py"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    networks:
+      - jupyter-network
+
+networks:
+  jupyter-network:
+    driver: bridge
+    name: jupyter-network
